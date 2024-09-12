@@ -28,37 +28,55 @@
  * 
  * @typedef {Object} CronJobEvent
  * @property {string} organization_id - The ID of the organization for which the cron job is scheduled.
- * @property {string} datetime - The ISO 8601 timestamp when the cron job is scheduled to execute.
- * @property {Object} [task] - The task that is to be executed. This could be $crud, $api, or other specific operations.
- * @property {boolean} [scheduled] - Whether the cron job has already been scheduled for execution.
- * @property {string} [nextCronExecutionTime] - The next time the cron job will execute, typically used in polling.
+ * @property {string} nextExecutionTime - The ISO 8601 timestamp for the next time the cron job is scheduled to execute.
+ * @property {Object} [schedule] - The scheduling information, including cronExpression, interval, and time-related settings.
+ * @property {string} [status] - The current status of the cron job, e.g., 'assigned', 'completed', 'failed'.
+ * @property {boolean} [active] - Whether the cron job is active or paused.
+ * @property {Object} [job] - The job that is to be executed, which could be $crud, $api, or other specific operations.
  * @property {Object} [retryPolicy] - Retry settings for failed jobs, including retries and backoff strategy.
- * @property {Object} [log] - An optional log of the cron job's last execution details.
+ * @property {Object} [log] - An optional log of the cron job's last execution details, including status and message.
  *
  * Example Object:
  * 
  * @example
  * {
  *   "organization_id": "652c8d62679eca03e0b116a7",
- *   "datetime": "2024-09-10T02:00:00Z",
- *   "task": {
+ *   "nextExecutionTime": "2024-09-10T02:00:00Z",
+ *   "active": true,                      // Whether the cron job is active or paused
+ *   "status": "assigned",
+ *   "schedule": {
+ *     "cronExpression": "0 2 * * *",        // Standard cron expression (for Unix-based scheduling)
+ *     "startBoundary": "2024-09-10T02:00:00Z",  // The first scheduled execution time
+ *     "endBoundary": "2025-09-10T02:00:00Z",    // The end time after which no further executions will occur
+ *     "interval": "P1D",                   // ISO 8601 format for repeating interval (e.g., repeat every day)
+ *     "daysOfWeek": ["Monday", "Wednesday"], // Days of the week when the job should run
+ *     "daysOfMonth": [1, 15],              // Specific days of the month for execution
+ *     "months": ["January", "July"],       // Specific months for execution
+ *     "skipDates": ["2024-12-25"],         // Dates to skip execution
+ *     "timezone": "UTC",                   // Timezone for scheduling
+ *     "time": "02:00:00"                  // Specific time of day when the job should run
+ *   }, 
+ *   "job": {
  *     "$crud": {
  *       "method": "object.update",
- *       "collection": "users",
+ *       "array": "users",
  *       "query": { "stripe.account_id": "acc_123456" },
  *       "object": { "stripe.balance": 1000 }
  *     }
  *   },
- *   "scheduled": false,
- *   "nextCronExecutionTime": "2024-09-10T02:00:00Z",
  *   "retryPolicy": {
- *     "retries": 3,
- *     "retryInterval": "PT10M"
+ *     "retries": 3,                      // Number of retries for failed jobs
+ *     "retryInterval": "PT10M"           // Interval between retries in ISO 8601 format
  *   },
+ *   "backoffStrategy": {
+ *     "type": "exponential",             // Type of backoff strategy (exponential, linear, etc.)
+ *     "initialDelay": "PT5M"             // Initial delay before the first retry
+ *   },
+ *   "executionTimeout": "PT2H",           // Timeout for job execution (ISO 8601 format)
  *   "log": {
  *     "timestamp": "2024-09-09T02:00:00Z",
  *     "status": "completed",
- *     "message": "Task executed successfully"
+ *     "message": "Job executed successfully"
  *   }
  * }
  * 
@@ -74,7 +92,7 @@ class CoCreateCronJobs {
         this.scheduledJobs = {};
 
         // Listen for CRUD events related to cron jobs
-        this.crud.on('crud-event', (event) => {
+        process.on('crud-event', (event) => {
             this.handleCrudEvent(event);
         });
 
@@ -89,27 +107,50 @@ class CoCreateCronJobs {
      * @param {Object} data - The data object emitted from CRUD operations.
      */
     handleCrudEvent(data) {
-        // Check if the collection is 'cron-job'
-        if (data.collection !== 'cron-job') {
+        // Check if the array is 'cron-job'
+        if (data.array !== 'cron-job') {
             return;  // Ignore non-cron-job events
         }
 
-        // Iterate over the tasks in the data.object array
-        for (let task of data.object) {
-            const nextExecutionTime = this.getNextExecutionTime(task.schedule);
+        // Iterate over the jobs in the data.object array
+        for (let i = 0; i < data.object.length; i++) {
+            if (data.method === 'object.delete' || data.object[i].active === false) {
+                const timeoutId = this.scheduledJobs[data.object[i]._id];
+
+                if (timeoutId) {
+                    clearTimeout(timeoutId); // Cancel the timeout if it exists
+                    delete this.scheduledJobs[data.object[i]._id]; // Remove the reference
+                }
+
+                data.object.splice(i, 1);
+                i--;  // Adjust the index after removal
+
+                continue;
+            }
+
+            const nextExecutionTime = this.getNextExecutionTime(data.object[i].schedule);
 
             if (nextExecutionTime) {
+                // TODO: Compare executionTime if equal continue
+                if (this.scheduledJobs[data.object[i]._id])
+                    continue
+
                 const timeUntilExecution = new Date(nextExecutionTime) - new Date();
+
+                data.object[i].nextExecutionTime = nextExecutionTime
 
                 // If the next execution is within the next 5 minutes, schedule the job
                 if (timeUntilExecution <= 5 * 60 * 1000 && timeUntilExecution > 0) {
-                    this.scheduleCronJob(task.organization_id, nextExecutionTime);
-                } else {
-                    // Otherwise, add to platform DB for polling
-                    this.addToPlatformDB(task.organization_id, nextExecutionTime);
+                    data.object[i].status = 'assigned'
+                    this.scheduleCronJob(data.object[i]);
                 }
+            } else {
+                data.object.splice(i, 1);
+                i--;  // Adjust the index after removal
             }
         }
+
+        this.updateCronJob(data.object);
     }
 
     /**
@@ -187,37 +228,160 @@ class CoCreateCronJobs {
      * @param {string} organization_id - The organization ID.
      * @param {string} datetime - The time at which the job should be executed.
      */
-    scheduleCronJob(organization_id, datetime) {
-        const delay = new Date(datetime) - new Date();
+    scheduleCronJob(object) {
+        const delay = new Date(object.nextExecutionTime) - new Date();
 
         if (delay <= 0) {
-            console.log(`Skipping past-due job for org ${organization_id}`);
+            this.executeCronJob(object);
             return;
         }
 
-        console.log(`Scheduling cron job for org ${organization_id} in ${delay / 1000} seconds`);
+        console.log(`Scheduling cron job for org ${object.organization_id} in ${delay / 1000} seconds`);
 
-        this.scheduledJobs[organization_id] = setTimeout(() => {
-            this.executeCronJob(organization_id);
+        // TODO: get clusterId, serverId and workerId
+        object = {
+            _id: object._id,
+            nextExecutionTime: object.nextExecutionTime,
+            status: object.status,
+            clusterId: 'id',
+            severId: 'id',
+            workerId: 'id',
+            organization_id: object.organization_id
+        }
+
+        this.scheduledJobs[object._id] = setTimeout(() => {
+            this.executeCronJob(object);
         }, delay);
     }
 
     /**
      * Executes the scheduled cron job.
      * 
-     * @param {string} organization_id - The organization ID.
+     * @param {Object} schedule - The cron-job object containing job, schedule, etc.
      */
-    executeCronJob(organization_id) {
-        console.log(`Executing cron job for org ${organization_id}`);
+    async executeCronJob(object) {
+        console.log(`Executing cron job for org ${object.organization_id}`);
 
-        this.crud.read({
-            collection: 'cron-job',
-            query: { organization_id }
-        }).then(cronJobData => {
-            console.log('Fetched cron job data:', cronJobData);
-            this.findNextCronJob(organization_id);
+        if (!object.job) {
+            let data = await this.crud.send({
+                method: 'object.read',
+                array: 'cron-job',
+                object: { _id: object._id },
+                organization_id: object.organization_id
+            })
+            object = data.object[0]
+            console.log('Fetched cron job data:', object);
+        }
+
+        // TODO: execute cron using lazyloader.webhook()
+        object.nextExecutionTime = this.getNextExecutionTime(object.schedule);
+        if (!object.nextExecutionTime) {
+            object.active = false
+            object.status = 'completed'
+        }
+
+        this.updateCronJob(object);
+    }
+
+
+    /**
+     * Polls the platform DB for cron jobs that are scheduled or potentially failed.
+     */
+    pollForCronJobs() {
+        console.log('Polling for cron jobs...');
+
+        const now = new Date();
+        const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
+        const oneMinuteAgo = new Date(now.getTime() - 1 * 60 * 1000);  // 1 minute past due jobs
+
+        this.crud.send({
+            method: 'object.read',
+            array: 'organizations',
+            filter: {
+                query: {
+                    $or: [
+                        {
+                            $and: [
+                                { 'cron-jobs.nextExecutionTime': { $elemMatch: { $lte: fiveMinutesFromNow, $gte: now } } }, // Match jobs in array within 5 minutes
+                                { 'cron-jobs.status': { $elemMatch: { $ne: 'assigned' } } },   // Not already assigned
+                                { 'cron-jobs.active': { $elemMatch: { $ne: false } } }   // Is active
+                            ]
+                        },
+                        {
+                            $and: [
+                                { 'cron-jobs.nextExecutionTime': { $elemMatch: { $lt: oneMinuteAgo } } },   // Past due by 1 minute
+                                { 'cron-jobs.status': { $elemMatch: { $eq: 'assigned' } } },    // Assigned but not started
+                                { 'cron-jobs.active': { $elemMatch: { $ne: false } } }   // Is active                              
+                            ]
+                        }
+                    ]
+                }
+            },
+            organization_id: process.env.organization_id
+        }).then(data => {
+            for (let i = 0; i < data.object.length; i++) {
+                const cronJobs = data.object[i].cronJobs;
+                if (!cronJobs)
+                    return
+
+                // Check each cron job in the organization's `cron-jobs` array
+                for (let j = 0; j < cronJobs; j++) {
+                    if (this.scheduledJobs[cronJobs[j]._id])
+                        return
+
+                    cronJobs[j].status = 'assigned'
+
+                    // TODO: get clusterId, serverId and workerId
+                    cronJobs[j].clusterId = 'id'
+                    cronJobs[j].severId = 'id'
+                    cronJobs[j].workerId = 'id'
+                    cronJobs[j].organization_id = data.object[i].organization_id
+
+                    this.scheduleCronJob(cronJobs[j]);
+                }
+
+                this.updateCronJob(cronJobs);
+            }
         }).catch(error => {
-            console.error(`Error fetching cron job for org ${organization_id}:`, error);
+            console.error('Error polling for cron jobs:', error);
+        });
+    }
+
+    /**
+     * Marks the cron job as failed after it is detected as past due and not started.
+     */
+    updateCronJob(object) {
+        if (!Array.isArray(object))
+            object = [object]
+
+        for (let i = 0; i < object.length; i++) {
+            this.crud.send({
+                method: 'object.update',
+                array: 'cron-jobs',
+                object,
+                upsert: true,
+                organization_id: object.organization_id
+            }).then(() => {
+                console.log(`Cron job for org ${object.organization_id} updated.`);
+            }).catch(error => {
+                console.error(`Error updating cron job for org ${object.organization_id}:`, error);
+            });
+
+        }
+
+        const cronJobs = object
+        this.crud.send({
+            method: 'object.update',
+            array: 'organizations',
+            object: {
+                _id: object.organization_id,
+                cronJobs
+            },
+            organization_id: process.env.organization_id
+        }).then(() => {
+            console.log(`Cron job for org ${object.organization_id} updated.`);
+        }).catch(error => {
+            console.error(`Error updating cron job for org ${object.organization_id}:`, error);
         });
     }
 
@@ -230,10 +394,11 @@ class CoCreateCronJobs {
     addToPlatformDB(organization_id, datetime) {
         console.log(`Adding cron job reference to platform DB for org ${organization_id}`);
 
-        this.crud.update({
-            collection: 'organizations',
-            query: { _id: organization_id },
-            update: { nextCronExecutionTime: datetime }
+        this.crud.send({
+            method: 'object.read',
+            array: 'organizations',
+            object: { _id: organization_id, nextCron: datetime },
+            organization_id: process.env.organization_id
         }).then(() => {
             console.log(`Platform DB updated for org ${organization_id}`);
         }).catch(error => {
@@ -242,52 +407,10 @@ class CoCreateCronJobs {
     }
 
     /**
-     * Polls the platform DB for cron jobs scheduled within the next 5 minutes.
-     */
-    pollForCronJobs() {
-        console.log('Polling for cron jobs...');
-
-        const now = new Date();
-        const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
-
-        this.crud.read({
-            method: 'object.read',
-            collection: 'organizations',
-            filter: {
-                query: {
-                    $and: [
-                        { 'cron-jobs.datetime': { $lte: fiveMinutesFromNow } },
-                        { 'cron-jobs.datetime': { $gte: now } },
-                        {
-                            $or: [
-                                { 'cron-jobs.scheduled': false },
-                                { 'cron-jobs.scheduled': { $exists: false } },
-                                { 'cron-jobs.scheduled': null },
-                                { 'cron-jobs.datetime': { $lt: now }, 'cron-jobs.scheduled': true }
-                            ]
-                        }
-                    ]
-                }
-            }
-        }).then(organizations => {
-            organizations.forEach(org => {
-                const { _id: organization_id, 'cron-jobs': { datetime } } = org;
-
-                if (!this.scheduledJobs[organization_id]) {
-                    this.scheduleCronJob(organization_id, datetime);
-                    this.markCronJobAsScheduled(organization_id);
-                }
-            });
-        }).catch(error => {
-            console.error('Error polling for cron jobs:', error);
-        });
-    }
-
-    /**
-     * Finds and schedules the next cron job for the organization after one is executed.
-     * 
-     * @param {string} organization_id - The organization ID.
-     */
+    * Finds and schedules the next cron job for the organization after one is executed.
+    * 
+    * @param {string} organization_id - The organization ID.
+    */
     findNextCronJob(organization_id) {
         console.log(`Finding next cron job for org ${organization_id}`);
 
