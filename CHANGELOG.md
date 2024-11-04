@@ -1,3 +1,15 @@
+# [1.2.0](https://github.com/CoCreate-app/CoCreate-cron-jobs/compare/v1.1.0...v1.2.0) (2024-11-04)
+
+
+### Bug Fixes
+
+* prettier.config options ([3db36ce](https://github.com/CoCreate-app/CoCreate-cron-jobs/commit/3db36cee22950a23d31c3cf14e1b6ee18b306b61))
+
+
+### Features
+
+* add prettier.config.js and format files ([3e154a6](https://github.com/CoCreate-app/CoCreate-cron-jobs/commit/3e154a66de8550584bc8f42b49fa7a71c4d83095))
+
 # [1.1.0](https://github.com/CoCreate-app/CoCreate-cron-jobs/compare/v1.0.0...v1.1.0) (2024-09-21)
 
 
