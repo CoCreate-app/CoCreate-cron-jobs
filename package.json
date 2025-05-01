@@ -1,6 +1,6 @@
 {
   "name": "@cocreate/cron-jobs",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "A simple cron-jobs component in vanilla javascript. Easily configured using HTML5 data-attributes and/or JavaScript API.",
   "keywords": [
     "cron-jobs",

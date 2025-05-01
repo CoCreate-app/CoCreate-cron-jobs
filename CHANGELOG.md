@@ -1,3 +1,11 @@
+## [1.2.1](https://github.com/CoCreate-app/CoCreate-cron-jobs/compare/v1.2.0...v1.2.1) (2025-05-01)
+
+
+### Bug Fixes
+
+* update [@cocreate](https://github.com/cocreate) dependencies ([9418a17](https://github.com/CoCreate-app/CoCreate-cron-jobs/commit/9418a171dc21b548996205fc2b4fd311ff78f270))
+* webpack.config and devdependencies ([699bdd7](https://github.com/CoCreate-app/CoCreate-cron-jobs/commit/699bdd7cf7ca0fa57f41f18773374b57f73a3b15))
+
 # [1.2.0](https://github.com/CoCreate-app/CoCreate-cron-jobs/compare/v1.1.0...v1.2.0) (2024-11-04)
 
 
